@@ -120,16 +120,25 @@ struct sway_container *container_create(struct sway_view *view) {
 	c->shadow_enabled = config->shadow_enabled;
 	c->dim = config->default_dim_inactive;
 
-	c->animation_state.animation = malloc(sizeof(struct animation));
-	*c->animation_state.animation = init_animation();
-	c->animation_state.delta_x = 0;
-	c->animation_state.delta_y = 0;
-	c->animation_state.delta_width = 0;
-	c->animation_state.delta_height = 0;
-	c->animation_state.current_width = -1;
-	c->animation_state.current_height = -1;
+	c->animation_state.animation = init_animation(c);
+	c->animation_state.from_alpha = 0.0f;
+	c->animation_state.to_alpha = c->alpha;
+	c->animation_state.from_x = -1;
+	c->animation_state.from_y = -1;
+	c->animation_state.to_x = 0;
+	c->animation_state.to_y = 0;
+	c->animation_state.from_width = 0;
+	c->animation_state.from_height = 0;
+	c->animation_state.to_width = -1;
+	c->animation_state.to_height = -1;
+	c->animation_state.current_global_x = 0;
+	c->animation_state.current_global_y = 0;
+	c->animation_state.current_width = 0;
+	c->animation_state.current_height = 0;
 	c->animation_state.current_content_width = -1;
 	c->animation_state.current_content_height = -1;
+	c->animation_state.seat_is_resizing = false;
+	c->animation_state.seat_is_moving_float = false;
 
 	wl_signal_init(&c->events.destroy);
 	wl_signal_emit_mutable(&root->events.new_node, &c->node);
@@ -232,7 +241,8 @@ void container_update(struct sway_container *con) {
 	struct border_colors *colors = container_get_current_colors(con);
 	list_t *siblings = NULL;
 	enum sway_container_layout layout = L_NONE;
-	float alpha = con->alpha;
+	float alpha = MIN(1, MAX(0, get_animated_value(con->animation_state.from_alpha,
+		con->animation_state.to_alpha, &con->animation_state.animation)));
 
 	if (con->current.parent) {
 		siblings = con->current.parent->current.children;
@@ -527,6 +537,11 @@ void container_destroy(struct sway_container *con) {
 		return;
 	}
 
+	if (con->animation_state.animation.initialized) {
+		con->animation_state.animation.initialized = false;
+		wl_list_remove(&con->animation_state.animation.link);
+	}
+
 	free(con->title);
 	free(con->formatted_title);
 	free(con->title_format);
@@ -577,12 +592,6 @@ void container_begin_destroy(struct sway_container *con) {
 
 	if (con->pending.parent || con->pending.workspace) {
 		container_detach(con);
-	}
-
-	if (con->animation_state.animation->initialized) {
-		con->animation_state.animation->initialized = false;
-		wl_list_remove(&con->animation_state.animation->link);
-		free(con->animation_state.animation);
 	}
 }
 
@@ -1007,6 +1016,8 @@ void container_set_resizing(struct sway_container *con, bool resizing) {
 		return;
 	}
 
+	con->animation_state.seat_is_resizing = resizing;
+
 	if (con->view) {
 		if (con->view->impl->set_resizing) {
 			con->view->impl->set_resizing(con->view, resizing);
@@ -1023,6 +1034,9 @@ void container_set_floating(struct sway_container *container, bool enable) {
 	if (container_is_floating(container) == enable) {
 		return;
 	}
+
+	container->animation_state.seat_is_moving_float = false;
+	container->animation_state.seat_is_resizing = false;
 
 	struct sway_seat *seat = input_manager_current_seat();
 	struct sway_workspace *workspace = container->pending.workspace;
