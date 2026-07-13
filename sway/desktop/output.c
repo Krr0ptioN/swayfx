@@ -301,6 +301,10 @@ void output_configure_scene(struct sway_output *output, struct wlr_scene_node *n
 			return;
 		}
 
+		if (!surface && !scene_descriptor_try_get(&buffer->node, SWAY_SCENE_DESC_SAVED_BUFFER)) {
+			return;
+		}
+
 		if (!closest_con) {
 			return;
 		}
