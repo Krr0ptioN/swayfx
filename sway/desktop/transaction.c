@@ -783,6 +783,7 @@ static void arrange_fullscreen(struct wlr_scene_tree *tree,
 
 	wlr_scene_node_reparent(fs_node, tree);
 	wlr_scene_node_lower_to_bottom(fs_node);
+	wlr_scene_node_set_position(fs_node, 0, 0);
 }
 
 static void arrange_workspace_floating(struct sway_workspace *ws) {

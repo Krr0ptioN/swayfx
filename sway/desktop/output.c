@@ -306,6 +306,8 @@ void output_configure_scene(struct sway_output *output, struct wlr_scene_node *n
 		}
 
 		if (!closest_con) {
+			// no container (e.g. fullscreen view), clear stale corner radii
+			wlr_scene_buffer_set_corner_radii(buffer, corner_radii_none());
 			return;
 		}
 
