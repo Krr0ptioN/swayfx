@@ -716,7 +716,7 @@ static void arrange_container(struct sway_container *con,
 	con->animation_state.to_y = y;
 	con->animation_state.to_width = width;
 	con->animation_state.to_height = height;
-	con->animation_state.to_alpha = con->alpha;
+	con->animation_state.to_alpha = 1.0f;
 
 	// open animation — pop-in: grow from center while fading in
 	if (con->animation_state.from_x == -1) {
