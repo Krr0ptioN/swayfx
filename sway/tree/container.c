@@ -1604,7 +1604,8 @@ struct sway_container *container_split(struct sway_container *child,
 		enum sway_container_layout layout) {
 	// i3 doesn't split singleton H/V containers
 	// https://github.com/i3/i3/blob/3cd1c45eba6de073bc4300eebb4e1cc1a0c4479a/src/tree.c#L354
-	if (child->pending.parent || child->pending.workspace) {
+	if ((layout == L_HORIZ || layout == L_VERT) &&
+			(child->pending.parent || child->pending.workspace)) {
 		list_t *siblings = container_get_siblings(child);
 		if (siblings->length == 1) {
 			enum sway_container_layout current = container_parent_layout(child);
