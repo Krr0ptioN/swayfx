@@ -63,18 +63,14 @@ static bool con_has_title_bar(struct sway_container *con) {
 static void _arrange_container(struct sway_container *con,
 		int width, int height, int x, int y, bool title_bar, int gaps);
 
-static void anim_update_callback(struct sway_container *con) {
+static void anim_update_callback(void *data) {
+	struct sway_container *con = data;
 	// if there's a pending transaction there will be a re-arrange anyway
 	if (server.pending_transaction) {
 		return;
 	}
 
 	if (con->current.fullscreen_mode != FULLSCREEN_NONE) {
-		return;
-	}
-
-	if (con->current.workspace && !workspace_is_visible(con->current.workspace)) {
-		finish_animation(&con->animation_state.animation);
 		return;
 	}
 
@@ -90,9 +86,45 @@ static void anim_update_callback(struct sway_container *con) {
 	_arrange_container(con, width, height, x, y, con_has_title_bar(con), 0);
 }
 
-static void close_anim_complete_callback(struct sway_container *con) {
+static void close_anim_complete_callback(void *data) {
+	struct sway_container *con = data;
 	view_remove_saved_buffer(con->view);
 	container_destroy(con);
+}
+
+static void _fade_container_update(struct sway_container *con, void *data) {
+	// skip redundant update if the container is also being animated
+	if (con->animation_state.animation.initialized) {
+		return;
+	}
+	container_update(con);
+}
+
+static void workspace_fade_update_callback(void *data) {
+	struct sway_workspace *ws = data;
+	if (!ws || !ws->output) {
+		return;
+	}
+	// TODO: needed?
+	output_configure_scene(ws->output, &ws->layers.tiling->node, false, NULL);
+	workspace_for_each_container(ws, _fade_container_update, NULL);
+}
+
+static void workspace_fade_complete_callback(void *data) {
+	struct sway_workspace *ws = data;
+	if (!ws || !ws->output) {
+		return;
+	}
+	struct sway_output *output = ws->output;
+	if (output->current.active_workspace == ws) {
+		return;
+	}
+	wlr_scene_node_set_enabled(&ws->layers.tiling->node, false);
+	wlr_scene_node_set_enabled(&ws->layers.fullscreen->node, false);
+	for (int i = 0; i < ws->current.floating->length; i++) {
+		struct sway_container *floater = ws->current.floating->items[i];
+		wlr_scene_node_set_enabled(&floater->scene_tree->node, false);
+	}
 }
 
 /* Compensate for scene-graph reparenting by computing the drift between
@@ -729,7 +761,6 @@ static void arrange_container(struct sway_container *con,
 	} else {
 		// move animation
 		snap_animation_position(con);
-
 		con->animation_state.from_width = con->animation_state.current_width;
 		con->animation_state.from_height = con->animation_state.current_height;
 		con->animation_state.from_alpha = get_animated_value(con->animation_state.from_alpha,
@@ -848,10 +879,44 @@ static void disable_workspace(struct sway_workspace *ws) {
 }
 
 static void arrange_output(struct sway_output *output, int width, int height) {
+	struct sway_workspace *new_active = output->current.active_workspace;
+	struct sway_workspace *old_active = output->prev_active_workspace;
+
+	bool is_ws_switch = old_active && old_active != new_active
+		&& output->wlr_output->enabled && config->animation_duration_ms > 0 &&
+		!(old_active->current.fullscreen || new_active->current.fullscreen);
+
+	if (is_ws_switch) {
+		new_active->animation_state.from_alpha = 0.0f;
+
+		if (old_active->current.tiling->length == 0
+				&& old_active->current.floating->length == 0) {
+			new_active->animation_state.to_alpha = 1.0f;
+			add_animation(&new_active->animation_state.animation,
+				workspace_fade_update_callback, NULL);
+		} else {
+			new_active->animation_state.to_alpha = 0.0f;
+			float current_alpha = get_animated_value(old_active->animation_state.from_alpha,
+				old_active->animation_state.to_alpha, &old_active->animation_state.animation);
+			old_active->animation_state.from_alpha = current_alpha;
+			old_active->animation_state.to_alpha = 0.0f;
+
+			finish_animation(&new_active->animation_state.animation);
+			new_active->animation_state.from_alpha = 0.0f;
+			new_active->animation_state.to_alpha = 1.0f;
+
+			add_animation(&old_active->animation_state.animation,
+				workspace_fade_update_callback, workspace_fade_complete_callback);
+			add_animation(&new_active->animation_state.animation,
+				workspace_fade_update_callback, workspace_fade_complete_callback);
+		}
+	}
+
 	for (int i = 0; i < output->current.workspaces->length; i++) {
 		struct sway_workspace *child = output->current.workspaces->items[i];
 
 		bool activated = output->current.active_workspace == child && output->wlr_output->enabled;
+		bool animating = child->animation_state.animation.initialized;
 
 		wlr_scene_node_reparent(&child->layers.tiling->node, output->layers.tiling);
 		wlr_scene_node_reparent(&child->layers.fullscreen->node, output->layers.fullscreen);
@@ -859,7 +924,7 @@ static void arrange_output(struct sway_output *output, int width, int height) {
 		for (int i = 0; i < child->current.floating->length; i++) {
 			struct sway_container *floater = child->current.floating->items[i];
 			wlr_scene_node_reparent(&floater->scene_tree->node, root->layers.floating);
-			wlr_scene_node_set_enabled(&floater->scene_tree->node, activated);
+			wlr_scene_node_set_enabled(&floater->scene_tree->node, activated || animating);
 		}
 
 		if (activated) {
@@ -892,6 +957,20 @@ static void arrange_output(struct sway_output *output, int width, int height) {
 					area->height - gaps->top - gaps->bottom);
 				arrange_workspace_floating(child);
 			}
+		} else if (animating && !activated) {
+			// Workspace fading out - keep visible, alpha handled by render path
+			struct wlr_box *area = &output->usable_area;
+			struct side_gaps *gaps = &child->current_gaps;
+
+			wlr_scene_node_set_enabled(&child->layers.tiling->node, true);
+			wlr_scene_node_set_enabled(&child->layers.fullscreen->node, false);
+
+			wlr_scene_node_set_position(&child->layers.tiling->node,
+				gaps->left + area->x, gaps->top + area->y);
+
+			arrange_workspace_tiling(child,
+				area->width - gaps->left - gaps->right,
+				area->height - gaps->top - gaps->bottom);
 		} else {
 			wlr_scene_node_set_enabled(&child->layers.tiling->node, false);
 			wlr_scene_node_set_enabled(&child->layers.fullscreen->node, false);
@@ -899,6 +978,8 @@ static void arrange_output(struct sway_output *output, int width, int height) {
 			disable_workspace(child);
 		}
 	}
+
+	output->prev_active_workspace = new_active;
 }
 
 void arrange_popups(struct wlr_scene_tree *popups) {

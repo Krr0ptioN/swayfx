@@ -244,6 +244,13 @@ void container_update(struct sway_container *con) {
 	float alpha = MIN(1, MAX(0, get_animated_value(con->animation_state.from_alpha,
 		con->animation_state.to_alpha, &con->animation_state.animation))) * con->alpha;
 
+	if (con->current.workspace) {
+		alpha *= get_animated_value(
+			con->current.workspace->animation_state.from_alpha,
+			con->current.workspace->animation_state.to_alpha,
+			&con->current.workspace->animation_state.animation);
+	}
+
 	if (con->current.parent) {
 		siblings = con->current.parent->current.children;
 		layout = con->current.parent->current.layout;
@@ -538,8 +545,7 @@ void container_destroy(struct sway_container *con) {
 	}
 
 	if (con->animation_state.animation.initialized) {
-		con->animation_state.animation.initialized = false;
-		wl_list_remove(&con->animation_state.animation.link);
+		finish_animation(&con->animation_state.animation);
 	}
 
 	free(con->title);

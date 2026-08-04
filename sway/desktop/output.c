@@ -239,8 +239,8 @@ static bool could_container_overlap(struct sway_container *con) {
 	}
 
 	// animations can have tiled containers overlap in flight
-	return con->animation_state.animation.progress != 0.0f &&
-		con->animation_state.animation.progress != 1.0f;
+	return con->animation_state.animation.initialized ||
+		con->current.workspace->animation_state.animation.initialized;
 }
 
 void output_configure_scene(struct sway_output *output, struct wlr_scene_node *node,
@@ -269,6 +269,12 @@ void output_configure_scene(struct sway_output *output, struct wlr_scene_node *n
 	float opacity = closest_con ? get_animated_value(closest_con->animation_state.from_alpha,
 		closest_con->animation_state.to_alpha, &closest_con->animation_state.animation)
 		* closest_con->alpha : 1.0f;
+	if (closest_con && closest_con->current.workspace) {
+		opacity *= get_animated_value(
+			closest_con->current.workspace->animation_state.from_alpha,
+			closest_con->current.workspace->animation_state.to_alpha,
+			&closest_con->current.workspace->animation_state.animation);
+	}
 	int corner_radius = closest_con && container_has_corner_radius(closest_con) ?
 		closest_con->corner_radius : 0;
 

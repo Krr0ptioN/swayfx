@@ -15,9 +15,9 @@ struct animation_manager {
 	struct wl_list animations;
 } animation_manager;
 
-struct animation init_animation(struct sway_container *con) {
+struct animation init_animation(void *data) {
 	return (struct animation){
-		.con = con,
+		.data = data,
 		.progress = 0.0f,
 		.multiplier = 0.0f,
 		.initialized = false,
@@ -37,13 +37,13 @@ static int animation_timer() {
 		animation->multiplier = ease_out_cubic(animation->progress);
 
 		if (animation->update) {
-			animation->update(animation->con);
+			animation->update(animation->data);
 		}
 
 		if (animation->progress == 1.0f) {
 			finish_animation(animation);
 			if (animation->complete) {
-				animation->complete(animation->con);
+				animation->complete(animation->data);
 			}
 		}
 	}
@@ -55,11 +55,11 @@ static int animation_timer() {
 	return 0;
 }
 
-void add_animation(struct animation *animation, void (*update_callback)(struct sway_container *),
-		void (*complete_callback)(struct sway_container *)) {
+void add_animation(struct animation *animation, void (*update_callback)(void *),
+		void (*complete_callback)(void *)) {
 	if (!config->animation_duration_ms) {
 		if (complete_callback) {
-			complete_callback(animation->con);
+			complete_callback(animation->data);
 		}
 		return;
 	}
@@ -126,7 +126,7 @@ static float lerp(float a, float b, float t) {
 }
 
 float get_animated_value(float from, float to, const struct animation *animation) {
-	if (!config->animation_duration_ms) {
+	if (!config->animation_duration_ms || !animation->initialized) {
 		return to;
 	}
 	return lerp(from, to, animation->multiplier);
