@@ -80,7 +80,8 @@ struct sway_container *container_create(struct sway_view *view) {
 	c->content_tree = alloc_scene_tree(c->border.tree, &failed);
 
 	c->title_bar.border = alloc_rect_node(c->title_bar.tree, &failed);
-	c->title_bar.background = alloc_rect_node(c->title_bar.tree, &failed);
+	c->title_bar.background_left = alloc_rect_node(c->title_bar.tree, &failed);
+	c->title_bar.background_right = alloc_rect_node(c->title_bar.tree, &failed);
 
 	if (view) {
 		// only containers with views can have borders
@@ -271,7 +272,8 @@ void container_update(struct sway_container *con) {
 		}
 	}
 
-	scene_rect_set_color(con->title_bar.background, colors->background, alpha);
+	scene_rect_set_color(con->title_bar.background_left, colors->background, alpha);
+	scene_rect_set_color(con->title_bar.background_right, colors->background, alpha);
 	scene_rect_set_color(con->title_bar.border, colors->border, alpha);
 
 	if (con->view) {
@@ -349,14 +351,37 @@ static struct fx_corner_radii get_titlebar_corners(struct sway_container *con) {
 	return corners;
 }
 
+static void arrange_titlebar_bg_rect(struct wlr_scene_rect *rect,
+		int x, int y, int width, int height,
+		struct fx_corner_radii corners, struct wlr_box *cut) {
+	wlr_scene_node_set_position(&rect->node, x, y);
+	wlr_scene_rect_set_size(rect, width, height);
+	wlr_scene_rect_set_corner_radii(rect, corners);
+	wlr_scene_node_set_enabled(&rect->node, width > 0 && height > 0);
+
+	if (cut && cut->width > 0) {
+		wlr_scene_rect_set_clipped_region(rect, (struct clipped_region) {
+			.corners = {0},
+			.area = {
+				.x = cut->x - x,
+				.y = cut->y - y,
+				.width = cut->width,
+				.height = cut->height,
+			},
+		});
+	} else {
+		wlr_scene_rect_set_clipped_region(rect, clipped_region_get_default());
+	}
+}
+
 void container_arrange_title_bar(struct sway_container *con) {
 	enum alignment title_align = config->title_align;
 	int marks_buffer_width = 0;
 	int width = con->title_width;
 	int height = container_titlebar_height();
 
-	pixman_region32_t text_area;
-	pixman_region32_init(&text_area);
+	struct wlr_box left_cut = {0};
+	struct wlr_box right_cut = {0};
 
 	if (con->title_bar.marks_text) {
 		struct sway_text_node *node = con->title_bar.marks_text;
@@ -379,8 +404,13 @@ void container_arrange_title_bar(struct sway_container *con) {
 		wlr_scene_node_set_position(node->node,
 			h_padding, (height - node->height) >> 1);
 
-		pixman_region32_union_rect(&text_area, &text_area,
-			node->node->x, node->node->y, alloc_width, node->height);
+		struct wlr_box *slot = title_align == ALIGN_RIGHT ? &left_cut : &right_cut;
+		*slot = (struct wlr_box) {
+			.x = node->node->x,
+			.y = node->node->y,
+			.width = alloc_width,
+			.height = node->height,
+		};
 	}
 
 	if (con->title_bar.title_text) {
@@ -405,58 +435,52 @@ void container_arrange_title_bar(struct sway_container *con) {
 		wlr_scene_node_set_position(node->node,
 			h_padding, (height - node->height) >> 1);
 
-		pixman_region32_union_rect(&text_area, &text_area,
-			node->node->x, node->node->y, alloc_width, node->height);
+		struct wlr_box *slot = title_align == ALIGN_RIGHT ? &right_cut : &left_cut;
+		*slot = (struct wlr_box) {
+			.x = node->node->x,
+			.y = node->node->y,
+			.width = alloc_width,
+			.height = node->height,
+		};
 	}
 
 	// silence pixman errors
 	if (width <= 0 || height <= 0) {
-		pixman_region32_fini(&text_area);
 		return;
 	}
 
-	pixman_region32_t background, border;
-
 	int thickness = config->titlebar_border_thickness;
-	pixman_region32_init_rect(&background,
-		thickness, thickness,
-		width - thickness * 2, height - thickness * 2);
-	pixman_region32_init_rect(&border, 0, 0, width, height);
-	pixman_region32_subtract(&border, &border, &background);
-
-	pixman_region32_subtract(&background, &background, &text_area);
+	int bg_width = width - thickness * 2;
+	int bg_height = height - thickness * (config->titlebar_separator ? 2 : 1);
 
 	struct fx_corner_radii corners = get_titlebar_corners(con);
 
-	wlr_scene_node_set_position(&con->title_bar.background->node, thickness, thickness);
-	wlr_scene_rect_set_size(con->title_bar.background, width - thickness * 2,
-			height - thickness * (config->titlebar_separator ? 2 : 1));
-	wlr_scene_rect_set_corner_radii(con->title_bar.background, corners);
-	wlr_scene_rect_set_clipped_region(con->title_bar.background, (struct clipped_region) {
-			.corners = {0},
-			.area = {
-				.x = pixman_region32_extents(&text_area)->x1 - thickness,
-				.y = pixman_region32_extents(&text_area)->y1 - thickness,
-				.width = pixman_region32_extents(&text_area)->x2 - pixman_region32_extents(&text_area)->x1,
-				.height = pixman_region32_extents(&text_area)->y2 - pixman_region32_extents(&text_area)->y1,
-			},
-	});
+	int right_x = right_cut.width > 0 ? right_cut.x : thickness + bg_width;
+	right_x = MAX(right_x, thickness);
+
+	int left_width = MAX(right_x - thickness, 0);
+	int right_width = MAX(thickness + bg_width - right_x, 0);
+
+	arrange_titlebar_bg_rect(con->title_bar.background_left,
+		thickness, thickness, left_width, bg_height,
+		right_width > 0 ? fx_corner_radii_filter(corners, corner_radii_left(1)) : corners,
+		&left_cut);
+	arrange_titlebar_bg_rect(con->title_bar.background_right,
+		right_x, thickness, right_width, bg_height,
+		left_width > 0 ? fx_corner_radii_filter(corners, corner_radii_right(1)) : corners,
+		&right_cut);
 
 	wlr_scene_rect_set_size(con->title_bar.border, width, height);
 	wlr_scene_rect_set_corner_radii(con->title_bar.border, fx_corner_radii_extend(corners, thickness));
 	wlr_scene_rect_set_clipped_region(con->title_bar.border, (struct clipped_region) {
-			.corners = corners,
-			.area = {
-				.x = thickness,
-				.y = thickness,
-				.width = con->title_bar.background->width,
-				.height = con->title_bar.background->height,
-			},
+		.corners = corners,
+		.area = {
+			.x = thickness,
+			.y = thickness,
+			.width = bg_width,
+			.height = bg_height,
+		},
 	});
-
-	pixman_region32_fini(&text_area);
-	pixman_region32_fini(&background);
-	pixman_region32_fini(&border);
 
 	container_update(con);
 }
