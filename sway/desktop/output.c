@@ -240,7 +240,7 @@ static bool could_container_overlap(struct sway_container *con) {
 
 	// animations can have tiled containers overlap in flight
 	return con->animation_state.animation.initialized ||
-		con->current.workspace->animation_state.animation.initialized;
+		(con->current.workspace && con->current.workspace->animation_state.animation.initialized);
 }
 
 void output_configure_scene(struct sway_output *output, struct wlr_scene_node *node,

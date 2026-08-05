@@ -83,7 +83,12 @@ static void anim_update_callback(void *data) {
 	int y = get_animated_value(con->animation_state.from_y,
 		con->animation_state.to_y, &con->animation_state.animation);
 
-	_arrange_container(con, width, height, x, y, con_has_title_bar(con), 0);
+	bool title_bar = con_has_title_bar(con);
+	_arrange_container(con, width, height, x, y, title_bar, 0);
+	// refresh decorations for parent-managed title bars (tabbed/stacked)
+	if (!title_bar) {
+		container_update(con);
+	}
 }
 
 static void close_anim_complete_callback(void *data) {
